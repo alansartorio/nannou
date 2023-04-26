@@ -2,9 +2,9 @@ pub use egui;
 pub use egui::color_picker;
 pub use egui_wgpu_backend;
 
-use egui::{pos2, ClippedMesh, CtxRef};
-use egui_wgpu_backend::{epi, ScreenDescriptor};
-use nannou::{wgpu, winit::event::VirtualKeyCode, winit::event::WindowEvent::*};
+use egui::{pos2, ClippedPrimitive, Context};
+use egui_wgpu_backend::ScreenDescriptor;
+use nannou::{wgpu::{self, ToTextureView}, winit::event::VirtualKeyCode, winit::event::WindowEvent::*};
 use std::{
     cell::RefCell,
     ops::Deref,
@@ -18,7 +18,7 @@ use std::{
 ///
 /// For multi-window user interfaces, you will need to create an instance of this type per-window.
 pub struct Egui {
-    context: CtxRef,
+    context: Context,
     renderer: RefCell<Renderer>,
     input: Input,
 }
@@ -29,7 +29,7 @@ pub struct Egui {
 /// For targeting more than one window, users should construct a `Egui` for each.
 pub struct Renderer {
     render_pass: egui_wgpu_backend::RenderPass,
-    paint_jobs: Vec<ClippedMesh>,
+    paint_jobs: Vec<ClippedPrimitive>,
 }
 
 /// Tracking user and application event input.
@@ -89,7 +89,7 @@ impl Egui {
     }
 
     /// Access to the inner `egui::CtxRef`.
-    pub fn ctx(&self) -> &CtxRef {
+    pub fn ctx(&self) -> &Context {
         &self.context
     }
 
@@ -126,7 +126,7 @@ impl Egui {
         self.renderer
             .borrow_mut()
             .render_pass
-            .egui_texture_from_wgpu_texture(device, texture, texture_filter)
+            .egui_texture_from_wgpu_texture(device, &texture.to_texture_view(), texture_filter)
     }
 
     /// Registers a wgpu::Texture with an existing egui::TextureId.
@@ -140,7 +140,7 @@ impl Egui {
         self.renderer
             .borrow_mut()
             .render_pass
-            .update_egui_texture_from_wgpu_texture(device, texture, texture_filter, id)
+            .update_egui_texture_from_wgpu_texture(device, &texture.to_texture_view(), texture_filter, id)
     }
 
     /// Draws the contents of the inner `context` to the given frame.
@@ -152,63 +152,14 @@ impl Egui {
         renderer.draw_to_frame(&self.context, frame)
     }
 
-    /// Provide access to an `epi::Frame` within the given function.
-    ///
-    /// This method is primarily used for apps based on the `epi` interface.
-    pub fn with_epi_frame<F>(&mut self, proxy: nannou::app::Proxy, f: F)
-    where
-        F: FnOnce(&CtxRef, &mut epi::Frame),
-    {
-        let mut renderer = self.renderer.borrow_mut();
-        let integration_info = epi::IntegrationInfo {
-            native_pixels_per_point: Some(self.input.window_scale_factor as _),
-            // TODO: Provide access to this stuff.
-            web_info: None,
-            prefer_dark_mode: None,
-            cpu_usage: None,
-            name: "egui_nannou_wgpu",
-        };
-        let mut app_output = epi::backend::AppOutput::default();
-        let repaint_signal = Arc::new(RepaintSignal(Mutex::new(proxy)));
-        let mut frame = epi::backend::FrameBuilder {
-            info: integration_info,
-            tex_allocator: &mut renderer.render_pass,
-            // TODO: We may want to support a http feature for hyperlinks?
-            // #[cfg(feature = "http")]
-            // http: http.clone(),
-            output: &mut app_output,
-            repaint_signal: repaint_signal as Arc<_>,
-        }
-        .build();
-        f(&self.context, &mut frame)
-    }
-
-    /// The same as `with_epi_frame`, but calls `begin_frame` before calling the given function,
-    /// and then calls `end_frame` before returning.
-    pub fn do_frame_with_epi_frame<F>(&mut self, proxy: nannou::app::Proxy, f: F) -> egui::Output
-    where
-        F: FnOnce(&CtxRef, &mut epi::Frame),
-    {
-        self.begin_frame_inner();
-        self.with_epi_frame(proxy.clone(), f);
-        let output = self.end_frame_inner();
-
-        // If a repaint is required, ensure the event loop emits another update.
-        if output.needs_repaint {
-            proxy.wakeup().unwrap();
-        }
-
-        output
-    }
-
     fn begin_frame_inner(&mut self) {
         self.context.begin_frame(self.input.raw.take());
     }
 
-    fn end_frame_inner(&mut self) -> egui::Output {
-        let (output, paint_cmds) = self.context.end_frame();
-        self.renderer.borrow_mut().paint_jobs = self.context.tessellate(paint_cmds);
-        output
+    fn end_frame_inner(&mut self) -> egui::PlatformOutput {
+        let output = self.context.end_frame();
+        self.renderer.borrow_mut().paint_jobs = self.context.tessellate(output.shapes);
+        output.platform_output
     }
 }
 
@@ -267,11 +218,11 @@ impl Input {
                 match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         let line_height = 24.0;
-                        self.raw.scroll_delta = egui::vec2(*x, *y) * line_height;
+                        self.raw.events.push(egui::Event::Scroll(egui::vec2(*x, *y) * line_height));
                     }
                     winit::event::MouseScrollDelta::PixelDelta(delta) => {
                         // Actually point delta
-                        self.raw.scroll_delta = egui::vec2(delta.x as f32, delta.y as f32);
+                        self.raw.events.push(egui::Event::Scroll(egui::vec2(delta.x as f32, delta.y as f32)));
                     }
                 }
             }
@@ -298,6 +249,7 @@ impl Input {
                             key,
                             pressed: input.state == winit::event::ElementState::Pressed,
                             modifiers: self.raw.modifiers,
+                            repeat: false,
                         });
                     }
                 }
@@ -360,7 +312,7 @@ impl Renderer {
     /// Encode a render pass for drawing the given context's texture to the given `dst_texture`.
     pub fn encode_render_pass(
         &mut self,
-        context: &CtxRef,
+        context: &Context,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -376,16 +328,17 @@ impl Renderer {
             physical_height,
             scale_factor: dst_scale_factor,
         };
-        render_pass.update_texture(device, queue, &*context.texture());
-        render_pass.update_user_textures(&device, &queue);
+        render_pass.add_textures(device, queue, &context.end_frame().textures_delta)?;
         render_pass.update_buffers(device, queue, &paint_jobs, &screen_descriptor);
-        render_pass.execute(encoder, dst_texture, &paint_jobs, &screen_descriptor, None)
+        render_pass.execute(encoder, dst_texture, &paint_jobs, &screen_descriptor, None)?;
+        // render_pass.remove_textures(texture_delta)?;
+        Ok(())
     }
 
     /// Encodes a render pass for drawing the given context's texture to the given frame.
     pub fn draw_to_frame(
         &mut self,
-        context: &CtxRef,
+        context: &Context,
         frame: &nannou::Frame,
     ) -> Result<(), egui_wgpu_backend::BackendError> {
         let device_queue_pair = frame.device_queue_pair();
@@ -410,7 +363,7 @@ impl Renderer {
 
 impl<'a> FrameCtx<'a> {
     /// Produces a `CtxRef` ready for describing the UI for this frame.
-    pub fn context(&self) -> CtxRef {
+    pub fn context(&self) -> Context {
         self.ui.context.clone()
     }
 
@@ -435,17 +388,9 @@ impl<'a> Drop for FrameCtx<'a> {
 }
 
 impl<'a> Deref for FrameCtx<'a> {
-    type Target = egui::CtxRef;
+    type Target = egui::Context;
     fn deref(&self) -> &Self::Target {
         &self.ui.context
-    }
-}
-
-impl epi::RepaintSignal for RepaintSignal {
-    fn request_repaint(&self) {
-        if let Ok(guard) = self.0.lock() {
-            guard.wakeup().ok();
-        }
     }
 }
 

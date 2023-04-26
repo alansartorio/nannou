@@ -165,14 +165,12 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let path = capture_directory(app)
         .join(elapsed_frames.to_string())
         .with_extension("png");
-    snapshot
-        .read(move |result| {
-            let image = result.expect("failed to map texture memory").to_owned();
-            image
-                .save(&path)
-                .expect("failed to save texture to png image");
-        })
-        .unwrap();
+    snapshot.read(move |result| {
+        let image = result.expect("failed to map texture memory").to_owned();
+        image
+            .save(&path)
+            .expect("failed to save texture to png image");
+    });
 }
 
 // Draw the state of your `Model` into the given `Frame` here.

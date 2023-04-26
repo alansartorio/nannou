@@ -307,6 +307,8 @@ impl WindowEvent {
             | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 return None;
             }
+
+            _ => return None,
         };
 
         Some(event)

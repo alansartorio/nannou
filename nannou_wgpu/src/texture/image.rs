@@ -309,16 +309,24 @@ impl wgpu::RowPaddedBuffer {
     ///
     /// Note: The returned future will not be ready until the memory is mapped and the device is
     /// polled. You should *not* rely on the being ready immediately.
-    pub async fn read<'b>(&'b self) -> Result<ImageReadMapping<'b>, wgpu::BufferAsyncError> {
+    pub fn read<'b, F>(&'b self, callback: F)
+    where
+        F: 'static + Send + FnOnce(Result<ImageReadMapping<'b>, wgpu::BufferAsyncError>),
+    {
         let slice = self.buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read).await?;
-        Ok(wgpu::ImageReadMapping {
+
+        let (tx, rx) = oneshot::channel();
+        slice.map_async(wgpu::MapMode::Read, |_| tx.send(()).unwrap());
+
+        rx.recv().unwrap();
+        let view = slice.get_mapped_range();
+        callback(Ok(wgpu::ImageReadMapping {
             buffer: self,
             // fun exercise:
             // read the signature of wgpu::BufferSlice::get_mapped_range()
             // and try to figure out why we don't need another lifetime in ImageReadMapping :)
-            view: slice.get_mapped_range(),
-        })
+            view,
+        }));
     }
 }
 
@@ -566,11 +574,11 @@ where
     // Describe the layout of the data.
     let extent = texture.extent();
     let format = texture.format();
-    let block_size = format.describe().block_size;
+    let block_size = format.block_size(None).unwrap();
     let bytes_per_row = extent.width * block_size as u32;
     let image_data_layout = wgpu::ImageDataLayout {
         offset: 0,
-        bytes_per_row: std::num::NonZeroU32::new(bytes_per_row),
+        bytes_per_row: Some(bytes_per_row),
         rows_per_image: None,
     };
 
@@ -626,12 +634,12 @@ where
 
     // Describe the layout of the data.
     let format = texture.format();
-    let block_size = format.describe().block_size;
+    let block_size = format.block_size(None).unwrap();
     let bytes_per_row = extent.width * block_size as u32;
     let image_data_layout = wgpu::ImageDataLayout {
         offset: 0,
-        bytes_per_row: std::num::NonZeroU32::new(bytes_per_row),
-        rows_per_image: std::num::NonZeroU32::new(height),
+        bytes_per_row: Some(bytes_per_row),
+        rows_per_image: Some(height),
     };
 
     // Collect the data into a single slice.

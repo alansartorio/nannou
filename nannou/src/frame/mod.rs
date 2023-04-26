@@ -136,7 +136,7 @@ impl<'swap_chain> Frame<'swap_chain> {
 
         // If the user did specify capturing the frame, submit the asynchronous read.
         if let Some((path, snapshot)) = snapshot_capture {
-            let result = snapshot.read(move |result| match result {
+            snapshot.read(move |result| match result {
                 // TODO: Log errors, don't print to stderr.
                 Err(e) => eprintln!("failed to async read captured frame: {:?}", e),
                 Ok(image) => {
@@ -151,10 +151,6 @@ impl<'swap_chain> Frame<'swap_chain> {
                     }
                 }
             });
-            if let Err(wgpu::TextureCapturerAwaitWorkerTimeout(_)) = result {
-                // TODO: Log errors, don't print to stderr.
-                eprintln!("timed out while waiting for a worker thread to capture the frame");
-            }
         }
     }
 

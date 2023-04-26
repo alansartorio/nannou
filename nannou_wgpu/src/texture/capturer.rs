@@ -21,7 +21,6 @@ pub struct Capturer {
     converter_data_pair: Mutex<Option<ConverterDataPair>>,
     thread_pool: Arc<Mutex<Option<Arc<ThreadPool>>>>,
     workers: Option<u32>,
-    timeout: Option<Duration>,
 }
 
 /// A wrapper around the futures thread pool that counts active futures.
@@ -38,9 +37,6 @@ struct ThreadPool {
 /// specifically non-linear sRGBA8.
 pub struct Snapshot {
     buffer: wgpu::RowPaddedBuffer,
-    thread_pool: Arc<Mutex<Option<Arc<ThreadPool>>>>,
-    workers: Option<u32>,
-    timeout: Option<Duration>,
 }
 
 /// An error indicating that the threadpool timed out while waiting for a worker to become
@@ -153,7 +149,6 @@ impl Capturer {
             converter_data_pair: Default::default(),
             thread_pool: Default::default(),
             workers,
-            timeout,
         }
     }
 
@@ -223,9 +218,6 @@ impl Capturer {
 
         Snapshot {
             buffer,
-            thread_pool: self.thread_pool.clone(),
-            workers: self.workers,
-            timeout: self.timeout,
         }
     }
 
@@ -246,11 +238,12 @@ impl Capturer {
 
 impl Snapshot {
     /// Reads the non-linear sRGBA image from mapped memory and convert it to an owned buffer.
-    pub async fn read_async<'buffer>(
-        &'buffer self,
-    ) -> Result<Rgba8AsyncMappedImageBuffer<'buffer>, wgpu::BufferAsyncError> {
-        let mapping = self.buffer.read().await?;
-        Ok(Rgba8AsyncMappedImageBuffer(mapping))
+    pub fn read_async<'buffer, F>(&'buffer self, callback: F)
+    where
+        F: 'static + Send + FnOnce(Result<Rgba8AsyncMappedImageBuffer<'buffer>, wgpu::BufferAsyncError>),
+    {
+        self.buffer
+            .read(|mapping| callback(mapping.map(Rgba8AsyncMappedImageBuffer)));
     }
 
     /// The same as `read_async`, but runs the resulting future on an inner threadpool and calls
@@ -268,33 +261,11 @@ impl Snapshot {
     /// accumulating queue of pending texture buffers waiting to be mapped. To avoid blocking, you
     /// can try using a higher thread count, capturing a smaller texture, or using `read_async`
     /// instead and running the resulting future on a custom runtime or threadpool.
-    pub fn read<F>(self, callback: F) -> Result<(), AwaitWorkerTimeout<impl Future<Output = ()>>>
+    pub fn read<F>(self, callback: F)
     where
         F: 'static + Send + FnOnce(Result<Rgba8AsyncMappedImageBuffer, wgpu::BufferAsyncError>),
     {
-        let thread_pool = self.thread_pool();
-        let read_future = async move {
-            let res = self.read_async().await;
-            callback(res);
-        };
-        thread_pool.spawn_when_worker_available(read_future)
-    }
-
-    fn thread_pool(&self) -> Arc<ThreadPool> {
-        let mut guard = self
-            .thread_pool
-            .lock()
-            .expect("failed to acquire thread handle");
-        let thread_pool = guard.get_or_insert_with(|| {
-            let workers = self.workers.unwrap_or(num_cpus::get() as u32);
-            let thread_pool = ThreadPool {
-                active_futures: Arc::new(AtomicU32::new(0)),
-                workers,
-                timeout: self.timeout,
-            };
-            Arc::new(thread_pool)
-        });
-        thread_pool.clone()
+        self.read_async(callback);
     }
 }
 

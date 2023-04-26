@@ -177,7 +177,7 @@ impl Texture {
 
     /// The component type associated with the texture's format.
     pub fn sample_type(&self) -> wgpu::TextureSampleType {
-        self.format().describe().sample_type
+        self.format().sample_type(None).unwrap()
     }
 
     // Custom constructors.
@@ -374,7 +374,7 @@ impl TextureView {
     }
 
     pub fn sample_type(&self) -> wgpu::TextureSampleType {
-        self.format().describe().sample_type
+        self.format().sample_type(None).unwrap()
     }
 
     pub fn id(&self) -> TextureViewId {
@@ -432,6 +432,7 @@ impl Builder {
         dimension: Self::DEFAULT_DIMENSION,
         format: Self::DEFAULT_FORMAT,
         usage: Self::DEFAULT_USAGE,
+        view_formats: &[],
     };
 
     /// Creates a new `Default` builder
@@ -759,7 +760,7 @@ pub fn data_size_bytes(desc: &wgpu::TextureDescriptor) -> usize {
 
 /// Return the size of the given texture format in bytes.
 pub fn format_size_bytes(format: wgpu::TextureFormat) -> u32 {
-    format.describe().block_size as u32
+    format.block_size(None).unwrap()
 }
 
 /// Returns `true` if the given `wgpu::Extent3d`s are equal.
@@ -802,8 +803,8 @@ fn view_info_to_view_descriptor(info: &TextureViewInfo) -> wgpu::TextureViewDesc
         dimension: Some(info.dimension),
         aspect: info.aspect,
         base_mip_level: info.base_mip_level,
-        mip_level_count: info.level_count,
+        mip_level_count: info.level_count.map(NonZeroU32::get),
         base_array_layer: info.base_array_layer,
-        array_layer_count: info.array_layer_count,
+        array_layer_count: info.array_layer_count.map(NonZeroU32::get),
     }
 }
