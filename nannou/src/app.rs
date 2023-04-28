@@ -251,7 +251,7 @@ where
     ///
     /// The Model that is returned by the function is the same model that will be passed to the
     /// given event and view functions.
-    pub fn new(model: ModelFn<M>) -> Self {
+    pub fn new<F: 'static + FnOnce(&App) -> M>(model: F) -> Self {
         Self::new_async(move |app| Box::new(future::ready(model(app))))
     }
 
